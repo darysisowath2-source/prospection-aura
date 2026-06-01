@@ -255,7 +255,7 @@ select.assign{background:var(--sur);border:1px solid var(--bor);border-radius:5p
       <div class="cnt"><b id="count">0</b> prospects</div>
       <div class="sw">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input id="search" type="text" placeholder="Rechercher..." oninput="render()">
+        <input id="search" type="text" placeholder="Rechercher..." oninput="debounceSearch()">
       </div>
       <select class="fl" id="dep-sel" onchange="render()"><option value="">Tous depts</option></select>
       <select class="fl" id="st-sel" onchange="render()">
@@ -325,12 +325,16 @@ const NEXT_ST = {none:"contacte",contacte:"interesse",interesse:"devis",devis:"s
 const ST_LBL  = {none:"—",contacte:"Contacte",interesse:"Interesse",devis:"Devis",signe:"Signe",non:"Non"};
 const ST_CLS  = {none:"st-none",contacte:"st-contacte",interesse:"st-interesse",devis:"st-devis",signe:"st-signe",non:"st-non"};
 
-let sbData    = {};   // id -> {s,by,at,score,note,assigned}
-let enrichData = {}; // id -> {siren,forme_juridique,date_creation,tranche_effectif,naf_code,naf_libelle,dirigeant,ca}
-let histData  = [];
-let userName  = localStorage.getItem("vd_user")||"";
-let sfFilter  = "all", secFilter = "", sortCol = "", sortAsc = true;
-let notePopId = null, noteTimer = null, syncTimer = null, lastSync = null;
+let sbData     = {};
+let enrichData = {};
+let histData   = [];
+let userName   = localStorage.getItem("vd_user")||"";
+let sfFilter   = "all", secFilter = "", sortCol = "", sortAsc = true;
+let notePopId  = null, noteTimer = null, lastSync = null;
+let page       = 0;
+const PAGE_SZ  = 80;
+let searchTimer = null;
+let rtWs       = null;
 
 // ── SUPABASE ──────────────────────────────────────────────────────────────
 function sbH(){ return {apikey:SB_KEY,Authorization:"Bearer "+SB_KEY,"Content-Type":"application/json",Prefer:"return=representation"}; }
@@ -417,10 +421,58 @@ function setDot(s){ const d=document.getElementById("sdot"); d.className="sync-d
 function updateSyncInfo(){
   if(!lastSync) return;
   const s = Math.round((Date.now()-lastSync)/1000);
-  document.getElementById("sync-txt").textContent = s<5?"Sync OK":"Sync il y a "+s+"s";
+  const txt = s<5?"Temps reel":s<60?"Sync il y a "+s+"s":"Sync il y a "+(s/60|0)+"min";
+  document.getElementById("sync-txt").textContent = txt;
 }
-setInterval(()=>{ loadAll(); },20000);
-setInterval(updateSyncInfo, 5000);
+// Polling de secours toutes les 60s (Realtime prend le relai si actif)
+setInterval(()=>{ loadAll(); }, 60000);
+setInterval(updateSyncInfo, 3000);
+
+// ── SUPABASE REALTIME WebSocket ─────────────────────────────────────────
+function connectRealtime(){
+  if(rtWs && rtWs.readyState < 2) return;
+  const wsUrl = SB_URL.replace("https://","wss://")+"/realtime/v1/websocket?apikey="+SB_KEY+"&vsn=1.0.0";
+  rtWs = new WebSocket(wsUrl);
+
+  rtWs.onopen = ()=>{
+    rtWs.send(JSON.stringify({
+      event:"phx_join",
+      topic:"realtime:public:prospects_statuts",
+      payload:{config:{broadcast:{self:false},postgres_changes:[{event:"*",schema:"public",table:"prospects_statuts"}]}},
+      ref:"1", join_ref:"1"
+    }));
+  };
+
+  rtWs.onmessage = e=>{
+    const msg = JSON.parse(e.data);
+    // Confirme que le canal est joint
+    if(msg.event==="phx_reply"&&msg.payload&&msg.payload.status==="ok"){
+      setDot("ok");
+      document.getElementById("sync-txt").textContent="Temps reel";
+    }
+    // Changement en base
+    if(msg.event==="postgres_changes"){
+      const rec = msg.payload&&msg.payload.data&&msg.payload.data.record;
+      if(rec){
+        sbData[rec.prospect_id]={
+          s:rec.statut||"none", by:rec.updated_by||"", at:rec.updated_at,
+          score:rec.site_score, note:rec.note||"", assigned:rec.assigned_to||""
+        };
+        lastSync=new Date(); setDot("ok");
+        render(); renderPipeline(); updateNavCnt();
+      }
+    }
+  };
+
+  // Heartbeat Phoenix toutes les 25s
+  const hb = setInterval(()=>{
+    if(rtWs.readyState===1) rtWs.send(JSON.stringify({event:"heartbeat",topic:"phoenix",payload:{},ref:null}));
+    else clearInterval(hb);
+  }, 25000);
+
+  rtWs.onclose = ()=>{ setDot("err"); setTimeout(connectRealtime, 3000); };
+  rtWs.onerror = ()=>rtWs.close();
+}
 
 // ── USER ──────────────────────────────────────────────────────────────────
 function saveUser(){
@@ -429,26 +481,31 @@ function saveUser(){
   userName=v; localStorage.setItem("vd_user",v);
   document.getElementById("user-lbl").textContent=v;
   document.getElementById("modal").classList.remove("show");
-  loadAll(); loadHist(); loadEnrich();
+  Promise.all([loadAll(), loadEnrich(), loadHist()]).then(()=>connectRealtime());
 }
 function changeUser(){ document.getElementById("inp-user").value=userName; document.getElementById("modal").classList.add("show"); }
 
 // ── FILTRES ───────────────────────────────────────────────────────────────
 function setSF(f){
-  sfFilter=f;
+  sfFilter=f; page=0;
   document.querySelectorAll(".sf").forEach((b,i)=>b.classList.toggle("active",["all","without","with"][i]===f));
   render(); renderPipeline();
 }
 function setSort(col){
-  sortAsc = sortCol===col ? !sortAsc : true; sortCol=col;
+  sortAsc = sortCol===col ? !sortAsc : true; sortCol=col; page=0;
   document.querySelectorAll("th").forEach(th=>{ th.classList.remove("sorted"); const a=th.querySelector(".sort-arrow"); if(a) a.textContent="↕"; });
   const ths = [...document.querySelectorAll("th")];
   const colMap={nom:0,tel:1,score:3,ville:4};
   if(colMap[col]!==undefined){ ths[colMap[col]].classList.add("sorted"); const a=ths[colMap[col]].querySelector(".sort-arrow"); if(a) a.textContent=sortAsc?"↑":"↓"; }
   render();
 }
+function debounceSearch(){
+  clearTimeout(searchTimer);
+  searchTimer=setTimeout(()=>{ page=0; render(); },180);
+}
+
 function resetFilters(){
-  sfFilter="all"; secFilter=""; sortCol=""; sortAsc=true;
+  sfFilter="all"; secFilter=""; sortCol=""; sortAsc=true; page=0;
   document.getElementById("search").value="";
   document.getElementById("dep-sel").value="";
   document.getElementById("st-sel").value="";
@@ -506,39 +563,56 @@ function scoreBadge(s){
 }
 
 // ── RENDER PROSPECTS ──────────────────────────────────────────────────────
-function render(){
-  const data=getFiltered();
-  document.getElementById("count").textContent=data.length;
-  document.getElementById("cnt-prospects").textContent=data.length;
-  const tb=document.getElementById("tbody");
-  const empty=document.getElementById("empty");
-  if(!data.length){ tb.innerHTML=""; empty.style.display=""; return; }
-  empty.style.display="none";
-  tb.innerHTML=data.map(r=>{
-    const d=sbData[r.id]||{};
-    const st=d.s||"none", by=d.by||"", note=d.note||"", score=d.score, assigned=d.assigned||"";
-    const siteHtml = r.has
-      ? "<a class='site-a' href='"+(r.site.startsWith("http")?r.site:"https://"+r.site)+"' target='_blank' rel='noopener' onclick='event.stopPropagation()'>"+r.site.replace(/^https?:\/\//,"").slice(0,24)+"</a>"+scoreBadge(score)
-      : "<span class='no-site'>Aucun</span>";
-    const emailHtml=r.email
-      ? "<a class='em-a' href='mailto:"+r.email+"' title='"+r.email+"' onclick='event.stopPropagation()'>"+r.email.slice(0,20)+(r.email.length>20?"…":"")+"</a>"
-      : "<span style='color:var(--bor)'>—</span>";
-    const isMine=assigned===userName?"mine":"";
-    const assignOpts=[""].concat(TEAM).map(t=>"<option value='"+t+"'"+(assigned===t?" selected":"")+">"+( t||"—")+"</option>").join("");
-    return "<tr class='prospect-row "+isMine+"' onclick='openDrawer("+r.id+")'>\
-<td><div class='nom'>"+( r.nom||"(sans nom)")+"</div>"+(r.type?"<div class='tag'>"+r.type+"</div>":"")+"</td>\
+function rowHTML(r){
+  const d=sbData[r.id]||{};
+  const st=d.s||"none", by=d.by||"", note=d.note||"", score=d.score, assigned=d.assigned||"";
+  const siteHtml = r.has
+    ? "<a class='site-a' href='"+(r.site.startsWith("http")?r.site:"https://"+r.site)+"' target='_blank' rel='noopener' onclick='event.stopPropagation()'>"+r.site.replace(/^https?:\/\//,"").slice(0,24)+"</a>"+scoreBadge(score)
+    : "<span class='no-site'>Aucun</span>";
+  const emailHtml=r.email
+    ? "<a class='em-a' href='mailto:"+r.email+"' title='"+r.email+"' onclick='event.stopPropagation()'>"+r.email.slice(0,20)+(r.email.length>20?"…":"")+"</a>"
+    : "<span style='color:var(--bor)'>—</span>";
+  const isMine=assigned===userName?"mine":"";
+  const assignOpts=[""].concat(TEAM).map(t=>"<option value='"+t+"'"+(assigned===t?" selected":"")+">"+( t||"—")+"</option>").join("");
+  return "<tr class='prospect-row "+isMine+"' onclick='openDrawer("+r.id+")'>\
+<td><div class='nom'>"+(r.nom||"(sans nom)")+"</div>"+(r.type?"<div class='tag'>"+r.type+"</div>":"")+"</td>\
 <td class='tel'><a class='tel-a' href='tel:"+r.tel+"' onclick='event.stopPropagation()'>"+r.tel+"</a></td>\
 <td>"+emailHtml+"</td>\
 <td>"+siteHtml+"</td>\
-<td><div>"+( r.ville||"—")+"</div><div class='dep-b'>"+r.dep+"</div></td>\
+<td><div>"+(r.ville||"—")+"</div><div class='dep-b'>"+r.dep+"</div></td>\
 <td onmouseenter='showTip(event,"+r.id+")' onmouseleave='hideTip()'>\
   <button class='st "+ST_CLS[st]+"' onclick='event.stopPropagation();changeStatut("+r.id+",\""+NEXT_ST[st]+"\")'>"+ST_LBL[st]+"</button>\
   "+(by&&st!=="none"?"<span class='by-txt'>par "+by+"</span>":"")+"</td>\
 <td onclick='event.stopPropagation()'><select class='assign' onchange='changeAssign("+r.id+",this.value)'>"+assignOpts+"</select></td>\
 <td onclick='event.stopPropagation()'><button class='note-btn"+(note?" has-note":"")+"' onclick='openNotePop(event,"+r.id+")' title='"+(note?note.slice(0,40):"Ajouter une note")+"'>✏</button></td>\
 </tr>";
-  }).join("");
 }
+
+function render(){
+  const data=getFiltered();
+  document.getElementById("count").textContent=data.length;
+  document.getElementById("cnt-prospects").textContent=data.length;
+  const tb=document.getElementById("tbody");
+  const empty=document.getElementById("empty");
+  if(!data.length){ tb.innerHTML=""; empty.style.display=""; renderPager(0,0); return; }
+  empty.style.display="none";
+  const total=data.length;
+  const start=page*PAGE_SZ;
+  const slice=data.slice(start, start+PAGE_SZ);
+  tb.innerHTML=slice.map(rowHTML).join("");
+  renderPager(total, start+slice.length);
+}
+
+function renderPager(total, shown){
+  let el=document.getElementById("pager");
+  if(!el){ el=document.createElement("div"); el.id="pager"; el.style.cssText="display:flex;align-items:center;justify-content:center;gap:10px;padding:12px;flex-shrink:0;border-top:1px solid var(--bor);font-size:12px;color:var(--mu)"; document.getElementById("view-prospects").appendChild(el); }
+  if(total<=PAGE_SZ){ el.innerHTML=""; return; }
+  const pages=Math.ceil(total/PAGE_SZ);
+  el.innerHTML=(page>0?"<button class='btn' onclick='goPage("+(page-1)+")'>← Précédent</button>":"")
+    +"<span>Page "+(page+1)+" / "+pages+" · "+shown+" / "+total+" prospects</span>"
+    +(page<pages-1?"<button class='btn' onclick='goPage("+(page+1)+")'>Suivant →</button>":"");
+}
+function goPage(p){ page=p; render(); document.querySelector(".tw").scrollTop=0; }
 
 // ── RENDER PIPELINE ───────────────────────────────────────────────────────
 function renderPipeline(){
@@ -724,7 +798,7 @@ function buildSidebar(){
   ).join("");
 }
 function setSec(el,s){
-  secFilter=s;
+  secFilter=s; page=0;
   document.querySelectorAll("#sb-secs .si").forEach(e=>e.classList.remove("active"));
   el.classList.add("active"); render(); renderPipeline();
 }
@@ -734,7 +808,7 @@ buildSidebar();
 if(userName){
   document.getElementById("user-lbl").textContent=userName;
   document.getElementById("modal").classList.remove("show");
-  loadAll(); loadHist(); loadEnrich();
+  Promise.all([loadAll(), loadEnrich(), loadHist()]).then(()=>connectRealtime());
 } else { render(); }
 </script>
 </body>
