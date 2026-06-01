@@ -326,6 +326,7 @@ const ST_LBL  = {none:"—",contacte:"Contacte",interesse:"Interesse",devis:"Dev
 const ST_CLS  = {none:"st-none",contacte:"st-contacte",interesse:"st-interesse",devis:"st-devis",signe:"st-signe",non:"st-non"};
 
 let sbData    = {};   // id -> {s,by,at,score,note,assigned}
+let enrichData = {}; // id -> {siren,forme_juridique,date_creation,tranche_effectif,naf_code,naf_libelle,dirigeant,ca}
 let histData  = [];
 let userName  = localStorage.getItem("vd_user")||"";
 let sfFilter  = "all", secFilter = "", sortCol = "", sortAsc = true;
@@ -402,6 +403,15 @@ async function loadHist(){
   renderHist();
 }
 
+async function loadEnrich(){
+  try{
+    const r = await fetch(SB_URL+"/rest/v1/prospects_enrichissement?select=prospect_id,siren,forme_juridique,date_creation,tranche_effectif,naf_code,naf_libelle,dirigeant,ca",{headers:sbH()});
+    if(!r.ok) return;
+    const rows = await r.json();
+    rows.forEach(row=>{ enrichData[row.prospect_id]=row; });
+  }catch(e){ console.error("loadEnrich",e); }
+}
+
 // ── SYNC ──────────────────────────────────────────────────────────────────
 function setDot(s){ const d=document.getElementById("sdot"); d.className="sync-dot "+s; }
 function updateSyncInfo(){
@@ -419,7 +429,7 @@ function saveUser(){
   userName=v; localStorage.setItem("vd_user",v);
   document.getElementById("user-lbl").textContent=v;
   document.getElementById("modal").classList.remove("show");
-  loadAll(); loadHist();
+  loadAll(); loadHist(); loadEnrich();
 }
 function changeUser(){ document.getElementById("inp-user").value=userName; document.getElementById("modal").classList.add("show"); }
 
@@ -595,7 +605,28 @@ function openDrawer(id){
   const r=ALL.find(p=>p.id===id); if(!r) return;
   const d=sbData[id]||{};
   document.getElementById("dr-nom").textContent=r.nom||"(sans nom)";
+  const en = enrichData[id]||null;
+  const caStr    = en&&en.ca    ? en.ca    : "N/D";
+  const effStr   = en&&en.tranche_effectif ? en.tranche_effectif+" sal." : "N/D";
+  const formStr  = en&&en.forme_juridique  ? en.forme_juridique           : "N/D";
+  const dateCr   = en&&en.date_creation    ? en.date_creation.slice(0,4)  : "N/D";
+  const sirenStr = en&&en.siren            ? en.siren                     : "N/D";
+  const dirStr   = en&&en.dirigeant        ? en.dirigeant                 : "N/D";
+  const nafStr   = en&&en.naf_libelle      ? en.naf_libelle+" ("+en.naf_code+")" : (en&&en.naf_code||"N/D");
+  const enrichBlock = en
+    ? "<div class='d-sect' style='background:rgba(108,125,255,.06);border:1px solid rgba(108,125,255,.2);border-radius:8px;padding:14px;margin-bottom:18px'>\
+<div class='d-label' style='color:var(--ac);margin-bottom:10px'>Donnees entreprise</div>\
+<div class='d-row' style='margin-bottom:10px'><div class='d-field'><div class='d-label'>SIREN</div><div class='d-val' style='font-family:monospace'>"+sirenStr+"</div></div>\
+<div class='d-field'><div class='d-label'>Forme juridique</div><div class='d-val'>"+formStr+"</div></div></div>\
+<div class='d-row' style='margin-bottom:10px'><div class='d-field'><div class='d-label'>Creation</div><div class='d-val'>"+dateCr+"</div></div>\
+<div class='d-field'><div class='d-label'>Effectifs</div><div class='d-val'>"+effStr+"</div></div></div>\
+<div class='d-row' style='margin-bottom:10px'><div class='d-field'><div class='d-label'>CA (dernier dispo)</div><div class='d-val' style='color:var(--gr);font-weight:600'>"+caStr+"</div></div>\
+<div class='d-field'><div class='d-label'>Dirigeant</div><div class='d-val'>"+dirStr+"</div></div></div>\
+<div class='d-field'><div class='d-label'>Secteur NAF</div><div class='d-val' style='font-size:12px'>"+nafStr+"</div></div>\
+</div>"
+    : "<div class='d-sect' style='color:var(--mu);font-size:12px;padding:10px;border:1px dashed var(--bor);border-radius:8px;margin-bottom:18px;text-align:center'>Donnees entreprise non disponibles<br><small>Lancez enrich_companies.py</small></div>";
   document.getElementById("dr-body").innerHTML=
+    enrichBlock+
     "<div class='d-row'><div class='d-field'><div class='d-label'>Telephone</div><div class='d-val'><a href='tel:"+r.tel+"'>"+r.tel+"</a></div></div>\
 <div class='d-field'><div class='d-label'>Email</div><div class='d-val'>"+(r.email?"<a href='mailto:"+r.email+"'>"+r.email+"</a>":"—")+"</div></div></div>\
 <div class='d-row'><div class='d-field'><div class='d-label'>Site web</div><div class='d-val'>"+(r.has?"<a href='"+(r.site.startsWith("http")?r.site:"https://"+r.site)+"' target='_blank'>"+r.site+"</a>":"—")+"</div></div>\
@@ -703,7 +734,7 @@ buildSidebar();
 if(userName){
   document.getElementById("user-lbl").textContent=userName;
   document.getElementById("modal").classList.remove("show");
-  loadAll(); loadHist();
+  loadAll(); loadHist(); loadEnrich();
 } else { render(); }
 </script>
 </body>
