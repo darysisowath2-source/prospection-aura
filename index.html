@@ -270,9 +270,10 @@ select.assign{background:var(--sur);border:1px solid var(--bor);border-radius:5p
       <select class="fl" id="assign-sel" onchange="render()"><option value="">Tous</option><option value="mine">Mes prospects</option></select>
       <select class="fl" id="score-sel" onchange="render()">
         <option value="">Tous scores</option>
-        <option value="bad">Mauvais (0-3)</option>
-        <option value="mid">Moyen (4-6)</option>
-        <option value="good">Bon (7-10)</option>
+        <option value="bad">Mauvais site (0-3)</option>
+        <option value="mid">Site moyen (4-6)</option>
+        <option value="good">Bon site (7-10)</option>
+        <option value="unscored">Non score</option>
       </select>
       <button class="btn" onclick="resetFilters()">Reinit.</button>
       <button class="btn blue" onclick="exportCSV()">Export CSV</button>
@@ -465,9 +466,11 @@ function getFiltered(){
     if(asgn==="mine" && d.assigned!==userName) return false;
     if(sc){
       const s=d.score;
-      if(sc==="bad" && (s==null||s>3)) return false;
+      // null = pas encore score : inclus dans "bad" uniquement (cible par defaut)
+      if(sc==="bad" && s!=null && s>3) return false;
       if(sc==="mid" && (s==null||s<4||s>6)) return false;
       if(sc==="good" && (s==null||s<7)) return false;
+      if(sc==="unscored" && s!=null) return false;
     }
     if(q && !((r.nom+r.ville+r.type+r.tel+r.dep).toLowerCase().includes(q))) return false;
     return true;
