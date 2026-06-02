@@ -176,6 +176,52 @@ select.assign{background:var(--sur);border:1px solid var(--bor);border-radius:5p
 .modal .ok-btn{width:100%;background:var(--ac);border:none;border-radius:7px;padding:10px;color:#fff;font-size:14px;font-weight:600;cursor:pointer}
 
 @media(max-width:768px){aside{display:none}.nom{max-width:120px}}
+
+/* ── Priorite / cibles chaudes ── */
+.heat{display:inline-flex;align-items:center;gap:2px;font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;vertical-align:middle;margin-left:5px}
+.heat-hot{background:rgba(239,68,68,.18);color:#ff6b6b}
+.heat-warm{background:rgba(249,115,22,.16);color:var(--or)}
+.heat-cold{background:rgba(255,255,255,.06);color:var(--mu)}
+.btn.fire{border-color:#ff6b6b;color:#ff6b6b}
+.btn.fire.active{background:#ff6b6b;color:#fff;border-color:#ff6b6b}
+.btn.next{background:var(--gr);border-color:var(--gr);color:#06240f;font-weight:600}
+.btn.next:hover{background:#16a34a}
+
+/* ── Boutons issue rapide (drawer) ── */
+.outcomes{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px}
+.oc{border:1px solid var(--bor);background:var(--sur);color:var(--tx);border-radius:7px;padding:8px 12px;font-size:12.5px;cursor:pointer;font-weight:500;transition:all 120ms}
+.oc:hover{transform:translateY(-1px)}
+.oc.rep:hover{border-color:var(--mu)}
+.oc.no:hover{border-color:var(--rd);color:var(--rd)}
+.oc.rappel:hover{border-color:var(--yw);color:var(--yw)}
+.oc.int:hover{border-color:var(--bl);color:var(--bl)}
+.oc.dev:hover{border-color:var(--or);color:var(--or)}
+.oc.sign:hover{border-color:var(--gr);color:var(--gr)}
+.oc.active-rep{background:rgba(136,146,164,.2)}
+.rappel-quick{display:flex;gap:6px;margin-top:6px}
+.rq{border:1px solid var(--bor);background:none;color:var(--mu);border-radius:6px;padding:5px 10px;font-size:11.5px;cursor:pointer}
+.rq:hover{border-color:var(--yw);color:var(--yw)}
+.copy-msg{width:100%;margin-top:8px;border:1px solid var(--ac);background:rgba(108,125,255,.1);color:var(--ac);border-radius:7px;padding:9px;font-size:12.5px;cursor:pointer;font-weight:500}
+.copy-msg:hover{background:rgba(108,125,255,.2)}
+
+/* ── Rappel badge nav ── */
+.nav-cnt.warn{background:var(--yw);color:#3a2e00}
+
+/* ── KPI dashboard ── */
+.kpi-wrap{flex:1;overflow:auto;padding:20px}
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px}
+.kpi-card{background:var(--sur);border:1px solid var(--bor);border-radius:10px;padding:16px 18px}
+.kpi-val{font-size:30px;font-weight:700;line-height:1}
+.kpi-lbl{font-size:11px;color:var(--mu);margin-top:6px;text-transform:uppercase;letter-spacing:.08em}
+.kpi-sub{font-size:11px;color:var(--mu);margin-top:4px}
+.kpi-section-title{font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--mu);margin:18px 0 10px}
+.funnel{display:flex;flex-direction:column;gap:6px;max-width:540px}
+.funnel-row{display:flex;align-items:center;gap:10px}
+.funnel-bar{height:26px;border-radius:5px;display:flex;align-items:center;padding:0 10px;font-size:12px;font-weight:600;color:#fff;min-width:40px;transition:width 400ms}
+.funnel-lbl{width:130px;font-size:12.5px;color:var(--tx)}
+.kpi-table{width:100%;border-collapse:collapse;max-width:600px}
+.kpi-table th,.kpi-table td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--bor);font-size:12.5px}
+.kpi-table th{color:var(--mu);font-size:10.5px;text-transform:uppercase;letter-spacing:.08em}
 </style>
 </head>
 <body>
@@ -223,10 +269,14 @@ select.assign{background:var(--sur);border:1px solid var(--bor);border-radius:5p
   <button class="nav-btn" onclick="showView('pipeline',this)" id="btn-pipeline">
     Pipeline<span class="nav-cnt" id="cnt-pipeline">0</span>
   </button>
+  <button class="nav-btn" onclick="showView('stats',this)" id="btn-stats">
+    Stats
+  </button>
   <button class="nav-btn" onclick="showView('historique',this)" id="btn-hist">
     Historique
   </button>
-  <div class="sf-group" style="margin-left:16px">
+  <button class="btn next" style="margin-left:12px" onclick="nextToCall()">Prochain à appeler</button>
+  <div class="sf-group" style="margin-left:10px">
     <button class="sf active" onclick="setSF('all')">Tous</button>
     <button class="sf gr" onclick="setSF('without')">Sans site</button>
     <button class="sf or" onclick="setSF('with')">Avec site</button>
@@ -267,6 +317,7 @@ select.assign{background:var(--sur);border:1px solid var(--bor);border-radius:5p
         <option value="signe">Signe</option>
         <option value="non">Pas interesse</option>
         <option value="none">Non traite</option>
+        <option value="rappel">A rappeler</option>
       </select>
       <select class="fl" id="assign-sel" onchange="render()"><option value="">Tous</option><option value="mine">Mes prospects</option></select>
       <select class="fl" id="score-sel" onchange="render()">
@@ -276,6 +327,7 @@ select.assign{background:var(--sur);border:1px solid var(--bor);border-radius:5p
         <option value="good">Bon site (7-10)</option>
         <option value="unscored">Non score</option>
       </select>
+      <button class="btn fire" id="hot-btn" onclick="toggleHot()">Cibles chaudes</button>
       <button class="btn" id="closed-btn" onclick="toggleClosed()">Fermées masquées</button>
       <button class="btn" onclick="resetFilters()">Reinit.</button>
       <button class="btn blue" onclick="exportCSV()">Export CSV</button>
@@ -301,6 +353,11 @@ select.assign{background:var(--sur);border:1px solid var(--bor);border-radius:5p
   <!-- VIEW: PIPELINE -->
   <div class="view" id="view-pipeline">
     <div class="kanban" id="kanban"></div>
+  </div>
+
+  <!-- VIEW: STATS -->
+  <div class="view" id="view-stats">
+    <div class="kpi-wrap" id="kpi-wrap"></div>
   </div>
 
   <!-- VIEW: HISTORIQUE -->
@@ -333,6 +390,29 @@ let histData   = [];
 let userName   = localStorage.getItem("vd_user")||"";
 let sfFilter   = "all", secFilter = "", sortCol = "", sortAsc = true;
 let hideClosed = true;
+let hotMode = false;
+const PREMIUM = ["Vignoble / Vin","Brasserie / Spirit","Metiers de bouche","Artisanat d'art","Freelance / Indep","Tourisme / Hebergmt","Artisan / Batiment","Beaute","Restauration","Professions liber."];
+
+// Score de priorite 0-10 : pire site + secteur premium + mobile + non traite = chaud
+function priority(r){
+  const d=sbData[r.id]||{}, en=enrichData[r.id]||{};
+  if(en.etat==="Fermee") return -1;
+  let p=0;
+  if(!r.has) p+=3;
+  else if(d.score!=null){ if(d.score<=3)p+=4; else if(d.score<=6)p+=2; }
+  else p+=2;
+  if(PREMIUM.includes(r.sec)) p+=2;
+  if(/^0[67]/.test(r.tel)) p+=1;
+  const st=d.s||"none";
+  if(st==="none") p+=1; else if(st==="non"||st==="signe") p-=5;
+  return p;
+}
+function heatBadge(r){
+  const p=priority(r);
+  if(p>=6) return "<span class='heat heat-hot'>🔥 "+p+"</span>";
+  if(p>=4) return "<span class='heat heat-warm'>"+p+"</span>";
+  return "<span class='heat heat-cold'>"+p+"</span>";
+}
 let notePopId  = null, noteTimer = null, lastSync = null;
 let page       = 0;
 const PAGE_SZ  = 80;
@@ -345,11 +425,11 @@ function sbH(){ return {apikey:SB_KEY,Authorization:"Bearer "+SB_KEY,"Content-Ty
 async function loadAll(){
   setDot("ld");
   try{
-    const r = await fetch(SB_URL+"/rest/v1/prospects_statuts?select=prospect_id,statut,updated_by,updated_at,site_score,note,assigned_to",{headers:sbH()});
+    const r = await fetch(SB_URL+"/rest/v1/prospects_statuts?select=prospect_id,statut,updated_by,updated_at,site_score,note,assigned_to,rappel_at",{headers:sbH()});
     if(!r.ok) throw r.status;
     const rows = await r.json();
     rows.forEach(row => {
-      sbData[row.prospect_id] = {s:row.statut||"none",by:row.updated_by||"",at:row.updated_at,score:row.site_score,note:row.note||"",assigned:row.assigned_to||""};
+      sbData[row.prospect_id] = {s:row.statut||"none",by:row.updated_by||"",at:row.updated_at,score:row.site_score,note:row.note||"",assigned:row.assigned_to||"",rappel:row.rappel_at||""};
     });
     lastSync = new Date();
     updateSyncInfo();
@@ -515,8 +595,89 @@ function toggleClosed(){
   render(); renderPipeline();
 }
 
+function toggleHot(){
+  hotMode=!hotMode; page=0;
+  const b=document.getElementById("hot-btn");
+  b.classList.toggle("active", hotMode);
+  b.textContent = hotMode ? "🔥 Cibles chaudes ON" : "Cibles chaudes";
+  render();
+}
+
+function nextToCall(){
+  // Bascule sur la vue prospects, prend le lead le plus chaud non traite du set filtre
+  if(!document.getElementById("view-prospects").classList.contains("active")){
+    showView("prospects", document.getElementById("btn-prospects"));
+  }
+  const data=getFiltered().filter(r=>(sbData[r.id]||{}).s==="none"||!(sbData[r.id]||{}).s);
+  if(!data.length){ alert("Aucun prospect non traité dans le filtre actuel."); return; }
+  const best = hotMode ? data[0] : [...data].sort((a,b)=>priority(b)-priority(a))[0];
+  openDrawer(best.id);
+}
+
+function setRappel(id, days){
+  const d=new Date(); d.setDate(d.getDate()+days); d.setHours(10,0,0,0);
+  upsert(id, {rappel_at:d.toISOString(), updated_by:userName}).then(()=>{
+    sbData[id]={...(sbData[id]||{}), rappel:d.toISOString()};
+    addHist(id, "Rappel programmé "+d.toLocaleDateString("fr-FR"));
+    setDot("ok"); render(); updateNavCnt();
+  });
+}
+
+function copyMsg(id){
+  const r=ALL.find(p=>p.id===id);
+  const msg="Bonjour, "+(r&&r.nom?r.nom:"")+". Je suis "+userName+" de Veridian, on crée des sites internet pour les commerces. J'ai vu que vous n'aviez pas (ou plus) de site à jour, je peux vous en faire un sur mesure. Quand puis-je vous rappeler ? "+userName;
+  navigator.clipboard.writeText(msg).then(()=>{
+    const b=document.getElementById("copy-msg-btn"); if(b){ b.textContent="Copié ✓"; setTimeout(()=>b.textContent="Copier un message d'accroche",1500); }
+  });
+}
+
+// ── STATS / KPI ──
+function renderStats(){
+  const rows=Object.entries(sbData);
+  const cnt={none:0,contacte:0,interesse:0,devis:0,signe:0,non:0};
+  const perUser={};
+  rows.forEach(([id,d])=>{
+    const s=d.s||"none"; if(cnt[s]!=null) cnt[s]++;
+    if(d.by && s!=="none"){ perUser[d.by]=perUser[d.by]||{traite:0,signe:0,interesse:0,devis:0}; perUser[d.by].traite++;
+      if(s==="signe")perUser[d.by].signe++; if(s==="interesse")perUser[d.by].interesse++; if(s==="devis")perUser[d.by].devis++; }
+  });
+  const traites=cnt.contacte+cnt.interesse+cnt.devis+cnt.signe+cnt.non;
+  const interesses=cnt.interesse+cnt.devis+cnt.signe;
+  const tauxInt = traites? Math.round(interesses/traites*100):0;
+  const tauxSign = traites? Math.round(cnt.signe/traites*100):0;
+  const caPotentiel=(cnt.interesse+cnt.devis)*400, caSigne=cnt.signe*400;
+  const fmax=Math.max(traites,cnt.none,1);
+  const fbar=(label,color,n)=>`<div class='funnel-row'><span class='funnel-lbl'>${label}</span><div class='funnel-bar' style='width:${Math.max(Math.round(n/fmax*100),6)}%;background:${color}'>${n}</div></div>`;
+  let usersHtml="";
+  Object.entries(perUser).sort((a,b)=>b[1].signe-a[1].signe).forEach(([u,s])=>{
+    usersHtml+=`<tr><td><b>${u}</b></td><td>${s.traite}</td><td>${s.interesse}</td><td>${s.devis}</td><td style='color:var(--gr)'>${s.signe}</td></tr>`;
+  });
+  document.getElementById("kpi-wrap").innerHTML=`
+    <div class='kpi-grid'>
+      <div class='kpi-card'><div class='kpi-val'>${ALL.length}</div><div class='kpi-lbl'>Prospects</div></div>
+      <div class='kpi-card'><div class='kpi-val'>${traites}</div><div class='kpi-lbl'>Traités</div><div class='kpi-sub'>${ALL.length-traites} restants</div></div>
+      <div class='kpi-card'><div class='kpi-val' style='color:var(--bl)'>${tauxInt}%</div><div class='kpi-lbl'>Taux d'intérêt</div><div class='kpi-sub'>${interesses} intéressés</div></div>
+      <div class='kpi-card'><div class='kpi-val' style='color:var(--gr)'>${cnt.signe}</div><div class='kpi-lbl'>Signés</div><div class='kpi-sub'>${tauxSign}% de transfo</div></div>
+      <div class='kpi-card'><div class='kpi-val' style='color:var(--gr)'>${caSigne}€</div><div class='kpi-lbl'>CA signé</div><div class='kpi-sub'>+${caPotentiel}€ en cours</div></div>
+    </div>
+    <div class='kpi-section-title'>Entonnoir</div>
+    <div class='funnel'>
+      ${fbar('À contacter','#8892a4',cnt.none)}
+      ${fbar('Contactés','#eab308',cnt.contacte)}
+      ${fbar('Intéressés','#38bdf8',cnt.interesse)}
+      ${fbar('Devis envoyés','#f97316',cnt.devis)}
+      ${fbar('Signés','#22c55e',cnt.signe)}
+      ${fbar('Pas intéressés','#ef4444',cnt.non)}
+    </div>
+    <div class='kpi-section-title'>Par personne</div>
+    <table class='kpi-table'><thead><tr><th>Membre</th><th>Traités</th><th>Intéressés</th><th>Devis</th><th>Signés</th></tr></thead><tbody>${usersHtml||"<tr><td colspan=5 style='color:var(--mu)'>Aucune action encore.</td></tr>"}</tbody></table>
+  `;
+}
+
 function resetFilters(){
-  sfFilter="all"; secFilter=""; sortCol=""; sortAsc=true; page=0;
+  sfFilter="all"; secFilter=""; sortCol=""; sortAsc=true; page=0; hotMode=false;
+  document.getElementById("hot-btn").classList.remove("active");
+  document.getElementById("hot-btn").textContent="Cibles chaudes";
   document.getElementById("search").value="";
   document.getElementById("dep-sel").value="";
   document.getElementById("st-sel").value="";
@@ -541,7 +702,8 @@ function getFiltered(){
     if(hideClosed && (enrichData[r.id]||{}).etat==="Fermee") return false;
     const d=sbData[r.id]||{};
     const st=d.s||"none";
-    if(sf && st!==sf) return false;
+    if(sf==="rappel"){ if(!d.rappel) return false; }
+    else if(sf && st!==sf) return false;
     if(asgn==="mine" && d.assigned!==userName) return false;
     if(sc){
       const s=d.score;
@@ -551,10 +713,17 @@ function getFiltered(){
       if(sc==="good" && (s==null||s<7)) return false;
       if(sc==="unscored" && s!=null) return false;
     }
+    if(hotMode){
+      if((d.s||"none")!=="none") return false;
+      if((enrichData[r.id]||{}).etat==="Fermee") return false;
+      if(priority(r)<4) return false;
+    }
     if(q && !((r.nom+r.ville+r.type+r.tel+r.dep).toLowerCase().includes(q))) return false;
     return true;
   });
-  if(sortCol){
+  if(hotMode){
+    data = [...data].sort((a,b)=>priority(b)-priority(a));
+  } else if(sortCol){
     data = [...data].sort((a,b)=>{
       let va,vb;
       if(sortCol==="nom"){ va=a.nom.toLowerCase(); vb=b.nom.toLowerCase(); }
@@ -587,7 +756,7 @@ function rowHTML(r){
   const isMine=assigned===userName?"mine":"";
   const assignOpts=[""].concat(TEAM).map(t=>"<option value='"+t+"'"+(assigned===t?" selected":"")+">"+( t||"—")+"</option>").join("");
   return "<tr class='prospect-row "+isMine+"' onclick='openDrawer("+r.id+")'>\
-<td><div class='nom'>"+(r.nom||"(sans nom)")+((enrichData[r.id]||{}).etat==="Fermee"?" <span class='closed-tag'>Fermé</span>":"")+"</div>"+(r.type?"<div class='tag'>"+r.type+"</div>":"")+"</td>\
+<td><div class='nom'>"+(r.nom||"(sans nom)")+heatBadge(r)+((enrichData[r.id]||{}).etat==="Fermee"?" <span class='closed-tag'>Fermé</span>":"")+"</div>"+(r.type?"<div class='tag'>"+r.type+"</div>":"")+"</td>\
 <td class='tel'><a class='tel-a' href='tel:"+r.tel+"' onclick='event.stopPropagation()'>"+r.tel+"</a></td>\
 <td>"+emailHtml+"</td>\
 <td>"+siteHtml+"</td>\
@@ -720,6 +889,22 @@ function openDrawer(id){
 <div class='d-field'><div class='d-label'>Score site</div><div class='d-val'>"+scoreBadge(d.score)+"</div></div></div>\
 <div class='d-row'><div class='d-field'><div class='d-label'>Adresse</div><div class='d-val'>"+(r.adr||"—")+"<br>"+r.cp+" "+r.ville+"<br>"+r.dep+"</div></div>\
 <div class='d-field'><div class='d-label'>Secteur / Type</div><div class='d-val'>"+r.sec+"<br><span class='dep-b'>"+r.type+"</span></div></div></div>\
+<div class='d-sect'><div class='d-label'>Issue de l'appel</div>\
+<div class='outcomes'>\
+<button class='oc rep' onclick='changeStatut("+id+",\"none\");addHist("+id+",\"Répondeur / pas de réponse\")'>Répondeur</button>\
+<button class='oc rappel' onclick='setRappel("+id+",1)'>Rappeler demain</button>\
+<button class='oc int' onclick='changeStatut("+id+",\"interesse\")'>Intéressé</button>\
+<button class='oc dev' onclick='changeStatut("+id+",\"devis\")'>Devis envoyé</button>\
+<button class='oc sign' onclick='changeStatut("+id+",\"signe\")'>Signé</button>\
+<button class='oc no' onclick='changeStatut("+id+",\"non\")'>Pas intéressé</button>\
+</div>\
+<div class='rappel-quick'><span style='font-size:11px;color:var(--mu);align-self:center'>Rappel :</span>\
+<button class='rq' onclick='setRappel("+id+",1)'>+1j</button>\
+<button class='rq' onclick='setRappel("+id+",3)'>+3j</button>\
+<button class='rq' onclick='setRappel("+id+",7)'>+1 sem</button>\
+"+(d.rappel?"<span style='font-size:11px;color:var(--yw);align-self:center;margin-left:6px'>📅 "+new Date(d.rappel).toLocaleDateString('fr-FR')+"</span>":"")+"</div>\
+<button class='copy-msg' id='copy-msg-btn' onclick='copyMsg("+id+")'>Copier un message d'accroche</button>\
+</div>\
 <div class='d-sect'><div class='d-label'>Note</div><textarea style='width:100%;background:var(--bg);border:1px solid var(--bor);border-radius:7px;padding:9px;color:var(--tx);font-size:13px;resize:vertical;min-height:70px;outline:none;font-family:inherit' onchange='saveNote("+id+",this.value)' placeholder='Note...'>"+(d.note||"")+"</textarea></div>\
 <div class='d-sect'><div class='d-label'>Historique</div><div id='dr-hist'><div style='color:var(--mu);font-size:12px'>Chargement...</div></div></div>";
   // Charger historique du prospect
@@ -789,6 +974,7 @@ function showView(name, btn){
   btn.classList.add("active");
   if(name==="pipeline") renderPipeline();
   if(name==="historique") loadHist();
+  if(name==="stats") renderStats();
 }
 function updateNavCnt(){
   const p=ALL.filter(r=>{ const s=(sbData[r.id]||{}).s||"none"; return s!=="none"&&s!=="non"; }).length;
