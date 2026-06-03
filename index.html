@@ -934,7 +934,9 @@ function rowHTML(r){
 }
 
 function render(){
-  const data=getFiltered();
+  let data;
+  try { data = getFiltered(); }
+  catch(e){ console.error("getFiltered a echoue, fallback ALL:", e); data = ALL.slice(); }
   document.getElementById("count").textContent=data.length;
   document.getElementById("cnt-prospects").textContent=data.length;
   const tb=document.getElementById("tbody");
@@ -944,7 +946,8 @@ function render(){
   const total=data.length;
   const start=page*PAGE_SZ;
   const slice=data.slice(start, start+PAGE_SZ);
-  tb.innerHTML=slice.map(rowHTML).join("");
+  // Un enregistrement foireux ne doit jamais casser toute la liste
+  tb.innerHTML=slice.map(r=>{ try { return rowHTML(r); } catch(e){ console.error("rowHTML id="+(r&&r.id), e); return ""; } }).join("");
   renderPager(total, start+slice.length);
 }
 
