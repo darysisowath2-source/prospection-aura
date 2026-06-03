@@ -466,6 +466,11 @@ function caFmt(ca){
   if(n>=1e3) return Math.round(n/1e3)+" k€";
   return n+" €";
 }
+// Affiche un numero par paires : 0145660459 -> 01 45 66 04 59
+function fmtTel(t){
+  t=String(t||"").replace(/\D/g,"");
+  return t.length===10 ? t.replace(/(\d\d)(?=\d)/g,"$1 ") : (t||"—");
+}
 function heatBadge(r){
   const p=priority(r);
   if(p>=6) return "<span class='heat heat-hot'>🔥 "+p+"</span>";
@@ -714,7 +719,7 @@ function renderCallCard(){
       "<span class='call-sec'>"+r.sec+heatBadge(r)+"</span>"+
       "<div class='call-nom'>"+(r.nom||"(sans nom)")+"</div>"+
       "<div class='call-meta'>"+(r.adr?r.adr+", ":"")+(r.ville||"")+" ("+r.dep+")</div>"+
-      "<div class='call-tel'><a href='tel:"+r.tel+"'>"+r.tel+"</a>"+
+      "<div class='call-tel'><a href='tel:"+r.tel+"'>"+fmtTel(r.tel)+"</a>"+
         "<a class='call-cta' href='tel:"+r.tel+"'>Appeler</a></div>"+
       "<div class='call-info'>"+
         "<div class='call-info-item'><div class='k'>Site web</div><div class='v'>"+siteV+"</div></div>"+
@@ -893,7 +898,7 @@ function rowHTML(r){
   const assignOpts=[""].concat(TEAM).map(t=>"<option value='"+t+"'"+(assigned===t?" selected":"")+">"+( t||"—")+"</option>").join("");
   return "<tr class='prospect-row "+isMine+"' data-id='"+r.id+"' onclick='openDrawer("+r.id+")'>\
 <td><div class='nom'>"+(r.nom||"(sans nom)")+heatBadge(r)+((enrichData[r.id]||{}).etat==="Fermee"?" <span class='closed-tag'>Fermé</span>":"")+"</div>"+(r.type?"<div class='tag'>"+r.type+"</div>":"")+"</td>\
-<td class='tel'><a class='tel-a' href='tel:"+r.tel+"' onclick='event.stopPropagation()'>"+r.tel+"</a></td>\
+<td class='tel'><a class='tel-a' href='tel:"+r.tel+"' onclick='event.stopPropagation()'>"+fmtTel(r.tel)+"</a></td>\
 <td>"+emailHtml+"</td>\
 <td>"+siteHtml+"</td>\
 <td><div>"+(r.ville||"—")+"</div><div class='dep-b'>"+r.dep+"</div></td>\
@@ -1019,7 +1024,7 @@ function openDrawer(id){
     : "<div class='d-sect' style='color:var(--mu);font-size:12px;padding:10px;border:1px dashed var(--bor);border-radius:8px;margin-bottom:18px;text-align:center'>Donnees entreprise non disponibles<br><small>Lancez enrich_companies.py</small></div>";
   document.getElementById("dr-body").innerHTML=
     enrichBlock+
-    "<div class='d-row'><div class='d-field'><div class='d-label'>Telephone</div><div class='d-val'><a href='tel:"+r.tel+"'>"+r.tel+"</a></div></div>\
+    "<div class='d-row'><div class='d-field'><div class='d-label'>Telephone</div><div class='d-val'><a href='tel:"+r.tel+"'>"+fmtTel(r.tel)+"</a></div></div>\
 <div class='d-field'><div class='d-label'>Email</div><div class='d-val'>"+(r.email?"<a href='mailto:"+r.email+"'>"+r.email+"</a>":"—")+"</div></div></div>\
 <div class='d-row'><div class='d-field'><div class='d-label'>Site web</div><div class='d-val'>"+(r.has?"<a href='"+(r.site.startsWith("http")?r.site:"https://"+r.site)+"' target='_blank'>"+r.site+"</a>":"—")+"</div></div>\
 <div class='d-field'><div class='d-label'>Score site</div><div class='d-val'>"+scoreBadge(d.score)+"</div></div></div>\
