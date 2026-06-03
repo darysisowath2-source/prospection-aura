@@ -382,6 +382,7 @@ select.assign{background:var(--sur);border:1px solid var(--bor);border-radius:5p
       </select>
       <button class="btn fire" id="hot-btn" onclick="toggleHot()">Cibles chaudes</button>
       <button class="btn" onclick="setSort('ca')" title="Trier par chiffre d'affaires">Gros CA</button>
+      <button class="btn blue" id="goodsite-btn" onclick="toggleGoodSites()">Beaux sites masqués</button>
       <button class="btn" id="closed-btn" onclick="toggleClosed()">Fermées masquées</button>
       <button class="btn" onclick="resetFilters()">Reinit.</button>
       <button class="btn blue" onclick="exportCSV()">Export CSV</button>
@@ -444,6 +445,7 @@ let histData   = [];
 let userName   = localStorage.getItem("vd_user")||"";
 let sfFilter   = "all", secFilter = "", sortCol = "", sortAsc = true;
 let hideClosed = true;
+let hideGoodSites = true;   // masque ceux qui ont deja un beau site (score >=7)
 let hotMode = false;
 const PREMIUM = ["Vignoble / Vin","Brasserie / Spirit","Metiers de bouche","Artisanat d'art","Freelance / Indep","Tourisme / Hebergmt","Artisan / Batiment","Beaute","Restauration","Professions liber."];
 
@@ -668,6 +670,14 @@ function debounceSearch(){
   searchTimer=setTimeout(()=>{ page=0; render(); },180);
 }
 
+function toggleGoodSites(){
+  hideGoodSites=!hideGoodSites; page=0;
+  const b=document.getElementById("goodsite-btn");
+  b.textContent = hideGoodSites ? "Beaux sites masqués" : "Beaux sites affichés";
+  b.classList.toggle("blue", hideGoodSites);
+  render(); renderPipeline();
+}
+
 function toggleClosed(){
   hideClosed=!hideClosed; page=0;
   const b=document.getElementById("closed-btn");
@@ -852,6 +862,7 @@ function getFiltered(){
     if(secFilter && r.sec!==secFilter) return false;
     if(dep && r.dep!==dep) return false;
     if(hideClosed && (enrichData[r.id]||{}).etat==="Fermee") return false;
+    if(hideGoodSites && r.has && (sbData[r.id]||{}).score!=null && (sbData[r.id]||{}).score>=7) return false;
     const d=sbData[r.id]||{};
     const st=d.s||"none";
     if(sf==="rappel"){ if(!d.rappel) return false; }
