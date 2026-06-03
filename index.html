@@ -254,6 +254,12 @@ select.assign{background:var(--sur);border:1px solid var(--bor);border-radius:5p
 .call-oc.int:hover{border-color:var(--bl);color:var(--bl)}
 .call-oc.dev:hover{border-color:var(--or);color:var(--or)}
 .call-oc.sign:hover{border-color:var(--gr);color:var(--gr)}
+.call-obj{margin-bottom:14px;border:1px solid var(--bor);border-radius:10px;padding:10px 14px;background:var(--bg)}
+.call-obj summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--yw);list-style:none}
+.call-obj summary::-webkit-details-marker{display:none}
+.call-obj .obj{margin-top:10px;padding-top:8px;border-top:1px solid var(--bor)}
+.call-obj .obj b{font-size:12.5px;color:var(--tx)}
+.call-obj .obj p{font-size:12.5px;color:var(--mu);margin-top:3px;line-height:1.5}
 .call-skip{width:100%;max-width:720px;margin-top:12px;background:none;border:1px solid var(--bor);color:var(--mu);border-radius:10px;padding:11px;cursor:pointer;font-size:13px}
 .call-skip:hover{background:var(--sur);color:var(--tx)}
 .call-done{text-align:center;color:var(--mu);padding:40px}
@@ -729,6 +735,12 @@ function renderCallCard(){
       "</div>"+
       "<div class='call-script'><div class='lbl'>Accroche</div>"+msg+
         "<button class='copy-msg' id='call-copy' style='margin-top:10px' onclick='callCopy()'>Copier l'accroche</button></div>"+
+      "<details class='call-obj'><summary>Réponses aux objections ▾</summary>"+
+        "<div class='obj'><b>« On n'a pas besoin de site »</b><p>Le site n'est pas pour vous, il est pour les clients qui vous cherchent déjà sur Google et tombent sur rien (ou sur un concurrent). 7 personnes sur 10 vérifient en ligne avant de se déplacer. Et vous n'avez rien à gérer, je m'occupe de tout.</p></div>"+
+        "<div class='obj'><b>« 400€ c'est trop cher »</b><p>C'est une seule fois, pas un abonnement, et l'hébergement est gratuit à vie. Une agence facture 1500€ et plus. Un seul nouveau client régulier le rembourse. Vous payez 120€ pour démarrer, et 280€ seulement quand c'est en ligne et que ça vous plaît. Possible en 2-3 fois si besoin.</p></div>"+
+        "<div class='obj'><b>« J'ai déjà une page Facebook »</b><p>Facebook ne ressort pas en premier sur Google et vous ne maîtrisez rien. Un site vous appartient, apparaît dans les recherches, et fait beaucoup plus pro.</p></div>"+
+        "<div class='obj'><b>« Je vais réfléchir »</b><p>Bien sûr, c'est sans engagement. Je vous envoie le devis, le site reste en ligne, vous le montrez autour de vous. Je vous rappelle dans quelques jours ?</p></div>"+
+      "</details>"+
       "<div class='call-outcomes'>"+
         "<button class='call-oc rep' onclick='callOutcome(\"rep\")'>Répondeur</button>"+
         "<button class='call-oc rappel' onclick='callOutcome(\"rappel\")'>Rappeler +3j</button>"+
