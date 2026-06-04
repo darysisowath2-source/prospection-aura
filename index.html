@@ -499,17 +499,21 @@ function sbH(){ return {apikey:SB_KEY,Authorization:"Bearer "+SB_KEY,"Content-Ty
 async function loadAll(){
   setDot("ld");
   try{
-    const r = await fetch(SB_URL+"/rest/v1/prospects_statuts?select=prospect_id,statut,updated_by,updated_at,site_score,note,assigned_to,rappel_at",{headers:sbH()});
+    // select minimal et robuste (rappel_at gere a part, colonne optionnelle)
+    const r = await fetch(SB_URL+"/rest/v1/prospects_statuts?select=prospect_id,statut,updated_by,updated_at,site_score,note,assigned_to",{headers:sbH()});
     if(!r.ok) throw r.status;
     const rows = await r.json();
     rows.forEach(row => {
-      sbData[row.prospect_id] = {s:row.statut||"none",by:row.updated_by||"",at:row.updated_at,score:row.site_score,note:row.note||"",assigned:row.assigned_to||"",rappel:row.rappel_at||""};
+      sbData[row.prospect_id] = {s:row.statut||"none",by:row.updated_by||"",at:row.updated_at,score:row.site_score,note:row.note||"",assigned:row.assigned_to||"",rappel:(sbData[row.prospect_id]||{}).rappel||""};
     });
     lastSync = new Date();
     updateSyncInfo();
     setDot("ok");
     render(); renderPipeline(); updateNavCnt();
-  }catch(e){ console.error(e); setDot("err"); }
+    // Rappels : colonne optionnelle, ne casse rien si absente
+    fetch(SB_URL+"/rest/v1/prospects_statuts?select=prospect_id,rappel_at&rappel_at=not.is.null",{headers:sbH()})
+      .then(rr=>rr.ok?rr.json():[]).then(rows2=>{ rows2.forEach(x=>{ if(sbData[x.prospect_id]) sbData[x.prospect_id].rappel=x.rappel_at||""; }); }).catch(()=>{});
+  }catch(e){ console.error(e); setDot("err"); render(); }
 }
 
 async function upsert(id, patch){
