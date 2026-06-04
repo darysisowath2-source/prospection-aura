@@ -496,13 +496,26 @@ let rtWs       = null;
 // ── SUPABASE ──────────────────────────────────────────────────────────────
 function sbH(){ return {apikey:SB_KEY,Authorization:"Bearer "+SB_KEY,"Content-Type":"application/json",Prefer:"return=representation"}; }
 
+// Pagination : Supabase plafonne a 1000 lignes/requete -> on boucle par paquets
+async function fetchAll(path){
+  let off=0, all=[];
+  while(true){
+    const sep = path.includes("?") ? "&" : "?";
+    const r = await fetch(SB_URL+"/rest/v1/"+path+sep+"limit=1000&offset="+off,{headers:sbH()});
+    if(!r.ok) throw r.status;
+    const batch = await r.json();
+    all = all.concat(batch);
+    if(batch.length < 1000) break;
+    off += 1000;
+    if(off > 60000) break;
+  }
+  return all;
+}
+
 async function loadAll(){
   setDot("ld");
   try{
-    // select minimal et robuste (rappel_at gere a part, colonne optionnelle)
-    const r = await fetch(SB_URL+"/rest/v1/prospects_statuts?select=prospect_id,statut,updated_by,updated_at,site_score,note,assigned_to",{headers:sbH()});
-    if(!r.ok) throw r.status;
-    const rows = await r.json();
+    const rows = await fetchAll("prospects_statuts?select=prospect_id,statut,updated_by,updated_at,site_score,note,assigned_to");
     rows.forEach(row => {
       sbData[row.prospect_id] = {s:row.statut||"none",by:row.updated_by||"",at:row.updated_at,score:row.site_score,note:row.note||"",assigned:row.assigned_to||"",rappel:(sbData[row.prospect_id]||{}).rappel||""};
     });
@@ -511,17 +524,34 @@ async function loadAll(){
     setDot("ok");
     render(); renderPipeline(); updateNavCnt();
     // Rappels : colonne optionnelle, ne casse rien si absente
-    fetch(SB_URL+"/rest/v1/prospects_statuts?select=prospect_id,rappel_at&rappel_at=not.is.null",{headers:sbH()})
-      .then(rr=>rr.ok?rr.json():[]).then(rows2=>{ rows2.forEach(x=>{ if(sbData[x.prospect_id]) sbData[x.prospect_id].rappel=x.rappel_at||""; }); }).catch(()=>{});
+    fetchAll("prospects_statuts?select=prospect_id,rappel_at&rappel_at=not.is.null")
+      .then(rows2=>{ rows2.forEach(x=>{ if(sbData[x.prospect_id]) sbData[x.prospect_id].rappel=x.rappel_at||""; }); }).catch(()=>{});
   }catch(e){ console.error(e); setDot("err"); render(); }
 }
 
 async function upsert(id, patch){
-  const cur = sbData[id]||{};
-  const payload = {prospect_id:id, statut:cur.s||"none", updated_by:cur.by||"", ...patch};
+  const c = sbData[id]||{};
+  // On renvoie TOUS les champs connus pour ne jamais ecraser le score/note/assign/statut
+  const payload = {
+    prospect_id: id,
+    statut: c.s || "none",
+    updated_by: userName || c.by || "",
+    updated_at: new Date().toISOString(),
+    site_score: (c.score==null ? null : c.score),
+    note: c.note || null,
+    assigned_to: c.assigned || null,
+    ...patch
+  };
   const r = await fetch(SB_URL+"/rest/v1/prospects_statuts",{method:"POST",headers:{...sbH(),Prefer:"resolution=merge-duplicates"},body:JSON.stringify(payload)});
   if(!r.ok) throw r.status;
-  sbData[id] = {...(sbData[id]||{}), ...patch};
+  const upd={};
+  if("statut" in patch) upd.s=patch.statut;
+  if("updated_by" in patch) upd.by=patch.updated_by;
+  if("site_score" in patch) upd.score=patch.site_score;
+  if("note" in patch) upd.note=patch.note;
+  if("assigned_to" in patch) upd.assigned=patch.assigned_to;
+  if("rappel_at" in patch) upd.rappel=patch.rappel_at;
+  sbData[id] = {...c, ...upd};
 }
 
 async function addHist(id, action){
@@ -581,10 +611,9 @@ async function loadHist(){
 
 async function loadEnrich(){
   try{
-    const r = await fetch(SB_URL+"/rest/v1/prospects_enrichissement?select=prospect_id,siren,forme_juridique,date_creation,tranche_effectif,naf_code,naf_libelle,dirigeant,ca,etat",{headers:sbH()});
-    if(!r.ok) return;
-    const rows = await r.json();
+    const rows = await fetchAll("prospects_enrichissement?select=prospect_id,siren,forme_juridique,date_creation,tranche_effectif,naf_code,naf_libelle,dirigeant,ca,etat");
     rows.forEach(row=>{ enrichData[row.prospect_id]=row; });
+    render(); renderPipeline();
   }catch(e){ console.error("loadEnrich",e); }
 }
 
