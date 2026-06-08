@@ -500,6 +500,9 @@ let page       = 0;
 const PAGE_SZ  = 80;
 let searchTimer = null;
 let rtWs       = null;
+let rtOk       = false;  // le canal realtime est-il sain (joint + events recus) ?
+let rtRetry    = 0;      // compteur de reconnexions (backoff exponentiel)
+let pollTick   = 0;      // cadence le poll de secours
 
 // ── SUPABASE ──────────────────────────────────────────────────────────────
 function sbH(){ return {apikey:SB_KEY,Authorization:"Bearer "+SB_KEY,"Content-Type":"application/json",Prefer:"return=representation"}; }
@@ -673,8 +676,9 @@ function scheduleRender(){
   }, 120);
 }
 
-// Polling de secours toutes les 60s (Realtime prend le relai si actif)
-setInterval(()=>{ loadAll(); }, 60000);
+// Poll de secours : toutes les 60s si le realtime est KO ; sinon reconciliation
+// douce toutes les 5 min seulement (evite de recharger toute la table en continu).
+setInterval(()=>{ pollTick++; if(!rtOk || pollTick%5===0) loadAll(); }, 60000);
 setInterval(updateSyncInfo, 3000);
 
 // ── SUPABASE REALTIME WebSocket ─────────────────────────────────────────
@@ -696,6 +700,8 @@ function connectRealtime(){
     const msg = JSON.parse(e.data);
     // Confirme que le canal est joint
     if(msg.event==="phx_reply"&&msg.payload&&msg.payload.status==="ok"){
+      if(rtRetry>0) loadAll(); // reconnexion : on rattrape les changements manques pendant la coupure
+      rtOk=true; rtRetry=0;
       setDot("ok");
       document.getElementById("sync-txt").textContent="Temps reel";
     }
@@ -731,7 +737,13 @@ function connectRealtime(){
     else clearInterval(hb);
   }, 25000);
 
-  rtWs.onclose = ()=>{ setDot("err"); setTimeout(connectRealtime, 3000); };
+  rtWs.onclose = ()=>{
+    rtOk=false; setDot("err");
+    // Backoff exponentiel plafonne a 30s (evite la boucle de reconnexion serree)
+    const delay = Math.min(30000, 3000 * Math.pow(2, rtRetry++));
+    // Au retour, un loadAll() rattrape les changements manques pendant la coupure
+    setTimeout(()=>connectRealtime(), delay);
+  };
   rtWs.onerror = ()=>rtWs.close();
 }
 
@@ -990,14 +1002,24 @@ function getFiltered(){
   if(hotMode){
     data = [...data].sort((a,b)=>priority(b)-priority(a));
   } else if(sortCol){
+    const dir = sortAsc ? 1 : -1;
+    const numeric = (sortCol==="score" || sortCol==="ca");
+    const val = (r)=>{
+      if(sortCol==="nom")   return r.nom||"";
+      if(sortCol==="tel")   return r.tel||"";
+      if(sortCol==="ville") return r.ville||"";
+      if(sortCol==="score") return (sbData[r.id]||{}).score ?? -1;
+      if(sortCol==="ca")    return caNum(r.id);
+      return "";
+    };
     data = [...data].sort((a,b)=>{
-      let va,vb;
-      if(sortCol==="nom"){ va=a.nom.toLowerCase(); vb=b.nom.toLowerCase(); }
-      else if(sortCol==="tel"){ va=a.tel; vb=b.tel; }
-      else if(sortCol==="ville"){ va=a.ville.toLowerCase(); vb=b.ville.toLowerCase(); }
-      else if(sortCol==="score"){ va=(sbData[a.id]||{}).score??-1; vb=(sbData[b.id]||{}).score??-1; }
-      else if(sortCol==="ca"){ va=caNum(a.id); vb=caNum(b.id); }
-      return sortAsc ? (va>vb?1:-1) : (va<vb?1:-1);
+      const va=val(a), vb=val(b);
+      // Comparaison typee : numerique pour score/ca, locale pour le texte (accents, casse, chiffres)
+      let c = numeric ? (Number(va)-Number(vb))
+                      : String(va).localeCompare(String(vb), "fr", {sensitivity:"base", numeric:true});
+      // Tie-break stable par id : un tri repete ne reordonne plus les ex aequo
+      if(c===0) c = (a.id>b.id ? 1 : a.id<b.id ? -1 : 0);
+      return dir*c;
     });
   }
   return data;
@@ -1036,7 +1058,54 @@ function rowHTML(r){
 </tr>";
 }
 
+// Persistance de l'etat de navigation dans l'URL (filtres, tri, page) :
+// un refresh, un retour arriere ou un partage de lien retrouvent le meme contexte.
+function syncURL(){
+  try{
+    const p=new URLSearchParams();
+    const q=document.getElementById("search").value.trim();
+    const dep=document.getElementById("dep-sel").value;
+    const st=document.getElementById("st-sel").value;
+    const asgn=document.getElementById("assign-sel").value;
+    const sc=document.getElementById("score-sel").value;
+    if(q) p.set("q",q);
+    if(dep) p.set("dep",dep);
+    if(st) p.set("st",st);
+    if(asgn) p.set("asgn",asgn);
+    if(sc) p.set("sc",sc);
+    if(sfFilter!=="all") p.set("sf",sfFilter);
+    if(secFilter) p.set("sec",secFilter);
+    if(sortCol){ p.set("sort",sortCol); p.set("dir",sortAsc?"a":"d"); }
+    if(page) p.set("page",page);
+    if(hotMode) p.set("hot","1");
+    if(!hideClosed) p.set("closed","1");
+    if(!hideGoodSites) p.set("good","1");
+    if(mobileOnly) p.set("mob","1");
+    const qs=p.toString();
+    history.replaceState(null,"", qs ? ("?"+qs) : location.pathname);
+  }catch(e){ /* l'URL n'est pas critique, on n'echoue jamais ici */ }
+}
+function restoreFromURL(){
+  try{
+    const p=new URLSearchParams(location.search);
+    if(p.has("q"))    document.getElementById("search").value=p.get("q");
+    if(p.has("dep"))  document.getElementById("dep-sel").value=p.get("dep");
+    if(p.has("st"))   document.getElementById("st-sel").value=p.get("st");
+    if(p.has("asgn")) document.getElementById("assign-sel").value=p.get("asgn");
+    if(p.has("sc"))   document.getElementById("score-sel").value=p.get("sc");
+    if(p.has("sf")){ sfFilter=p.get("sf"); document.querySelectorAll(".sf").forEach((b,i)=>b.classList.toggle("active",["all","without","with"][i]===sfFilter)); }
+    if(p.has("sec")) secFilter=p.get("sec");
+    if(p.has("sort")){ sortCol=p.get("sort"); sortAsc=p.get("dir")!=="d"; }
+    if(p.has("hot")){ hotMode=true; const b=document.getElementById("hot-btn"); if(b){ b.classList.add("active"); b.textContent="🔥 Cibles chaudes ON"; } }
+    if(p.has("closed")){ hideClosed=false; const b=document.getElementById("closed-btn"); if(b){ b.textContent="Fermées affichées"; b.classList.add("blue"); } }
+    if(p.has("good")){ hideGoodSites=false; const b=document.getElementById("goodsite-btn"); if(b){ b.textContent="Beaux sites affichés"; b.classList.remove("blue"); } }
+    if(p.has("mob")){ mobileOnly=true; const b=document.getElementById("mobile-btn"); if(b) b.classList.add("blue"); }
+    if(p.has("page")) page=Math.max(0, parseInt(p.get("page"),10)||0);
+  }catch(e){ /* ignore une URL malformee */ }
+}
+
 function render(){
+  syncURL();
   let data;
   try { data = getFiltered(); }
   catch(e){ console.error("getFiltered a echoue, fallback ALL:", e); data = ALL.slice(); }
@@ -1274,6 +1343,7 @@ function setSec(el,s){
 
 // ── INIT ──────────────────────────────────────────────────────────────────
 buildSidebar();
+restoreFromURL(); // retrouver filtres/tri/page depuis l'URL (refresh, retour arriere, lien partage)
 if(userName){
   document.getElementById("user-lbl").textContent=userName;
   document.getElementById("modal").classList.remove("show");
