@@ -495,6 +495,7 @@ function heatBadge(r){
   return "<span class='heat heat-cold'>"+p+"</span>";
 }
 let notePopId  = null, noteTimer = null, lastSync = null;
+const inFlight = new Set(); // ids dont une mutation de statut est en cours (anti double-clic/double-submit)
 let page       = 0;
 const PAGE_SZ  = 80;
 let searchTimer = null;
@@ -584,9 +585,11 @@ function restoreSb(id, prev){
 }
 
 async function changeStatut(id, st){
+  if(inFlight.has(id)) return; // une mutation est deja en cours sur ce prospect -> ignore le double-clic
   const prev = sbData[id];
   const old = (prev||{}).s||"none";
   if(old===st) return;
+  inFlight.add(id);
   // Optimiste d'abord : l'UI repond tout de suite, la ligne reste en place
   sbData[id] = {...(prev||{}), s:st, by:userName, at:new Date().toISOString()};
   updateRow(id); updateNavCnt();
@@ -595,15 +598,16 @@ async function changeStatut(id, st){
     await upsert(id, {statut:st, updated_by:userName, updated_at:new Date().toISOString()});
     setDot("ok");
     if(document.getElementById("view-pipeline").classList.contains("active")) renderPipeline();
+    // Historique best-effort : ne doit jamais annuler un statut deja persiste
+    addHist(id, ST_LBL[old]+" → "+ST_LBL[st]).catch(err=>console.warn("addHist", id, err));
   }catch(e){
     // Echec : on annule la modif optimiste pour ne pas afficher un etat non sauvegarde
     restoreSb(id, prev); updateRow(id); updateNavCnt();
     if(document.getElementById("view-pipeline").classList.contains("active")) renderPipeline();
     setDot("err"); console.error("changeStatut", id, e);
-    return;
+  }finally{
+    inFlight.delete(id);
   }
-  // Historique best-effort : ne doit jamais annuler un statut deja persiste
-  addHist(id, ST_LBL[old]+" → "+ST_LBL[st]).catch(err=>console.warn("addHist", id, err));
 }
 
 async function changeAssign(id, val){
@@ -657,6 +661,18 @@ function updateSyncInfo(){
   const txt = s<5?"Temps reel":s<60?"Sync il y a "+s+"s":"Sync il y a "+(s/60|0)+"min";
   document.getElementById("sync-txt").textContent = txt;
 }
+// Rendu debounce : coalesce les rafales d'events realtime en un seul rendu,
+// et ne recalcule le pipeline que s'il est affiche (evite le jank multi-utilisateurs).
+let renderTimer=null;
+function scheduleRender(){
+  clearTimeout(renderTimer);
+  renderTimer=setTimeout(()=>{
+    render();
+    if(document.getElementById("view-pipeline").classList.contains("active")) renderPipeline();
+    updateNavCnt();
+  }, 120);
+}
+
 // Polling de secours toutes les 60s (Realtime prend le relai si actif)
 setInterval(()=>{ loadAll(); }, 60000);
 setInterval(updateSyncInfo, 3000);
@@ -685,14 +701,26 @@ function connectRealtime(){
     }
     // Changement en base
     if(msg.event==="postgres_changes"){
-      const rec = msg.payload&&msg.payload.data&&msg.payload.data.record;
-      if(rec){
-        sbData[rec.prospect_id]={
-          s:rec.statut||"none", by:rec.updated_by||"", at:rec.updated_at,
-          score:rec.site_score, note:rec.note||"", assigned:rec.assigned_to||""
-        };
-        lastSync=new Date(); setDot("ok");
-        render(); renderPipeline(); updateNavCnt();
+      const data = msg.payload && msg.payload.data;
+      if(data){
+        const type = data.type; // INSERT | UPDATE | DELETE
+        if(type==="DELETE"){
+          const oid = data.old_record && data.old_record.prospect_id;
+          if(oid!=null){ delete sbData[oid]; lastSync=new Date(); setDot("ok"); scheduleRender(); }
+        } else {
+          const rec = data.record;
+          if(rec){
+            // MERGE (et non ecrasement) : on preserve les champs locaux non renvoyes (ex: rappel)
+            const cur = sbData[rec.prospect_id] || {};
+            sbData[rec.prospect_id] = {
+              ...cur,
+              s:rec.statut||"none", by:rec.updated_by||"", at:rec.updated_at,
+              score:rec.site_score, note:rec.note||"", assigned:rec.assigned_to||"",
+              rappel: (rec.rappel_at!==undefined ? (rec.rappel_at||"") : (cur.rappel||""))
+            };
+            lastSync=new Date(); setDot("ok"); scheduleRender();
+          }
+        }
       }
     }
   };
