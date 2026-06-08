@@ -441,6 +441,12 @@ const NEXT_ST = {none:"contacte",contacte:"interesse",interesse:"devis",devis:"s
 const ST_LBL  = {none:"—",contacte:"Contacte",interesse:"Interesse",devis:"Devis",signe:"Signe",non:"Non"};
 const ST_CLS  = {none:"st-none",contacte:"st-contacte",interesse:"st-interesse",devis:"st-devis",signe:"st-signe",non:"st-non"};
 
+// Echappement HTML : TOUTE donnee dynamique injectee via innerHTML/outerHTML doit passer ici.
+// Sans ca, une note contenant du HTML (ex: </textarea><img onerror=...>) s'execute chez tous les coequipiers (XSS stocke).
+function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+// Pour une URL injectee dans un href : neutralise les schemes dangereux (javascript:, data:)
+function escUrl(u){ u=String(u==null?"":u); return /^\s*(javascript|data|vbscript):/i.test(u) ? "#" : esc(u); }
+
 let sbData     = {};
 let enrichData = {};
 let histData   = [];
@@ -502,13 +508,16 @@ async function fetchAll(path){
   let off=0, all=[];
   while(true){
     const sep = path.includes("?") ? "&" : "?";
-    const r = await fetch(SB_URL+"/rest/v1/"+path+sep+"limit=1000&offset="+off,{headers:sbH()});
+    // ORDER BY stable OBLIGATOIRE : sans ordre garanti, limit/offset peut sauter ou dupliquer
+    // des lignes entre deux pages -> statuts manquants/doublons percus comme "desync".
+    const ord = /(\?|&)order=/.test(path) ? "" : "&order=prospect_id.asc";
+    const r = await fetch(SB_URL+"/rest/v1/"+path+sep+"limit=1000&offset="+off+ord,{headers:sbH()});
     if(!r.ok) throw r.status;
     const batch = await r.json();
     all = all.concat(batch);
     if(batch.length < 1000) break;
     off += 1000;
-    if(off > 60000) break;
+    if(off > 200000){ console.warn("fetchAll: plafond de pagination atteint, donnees potentiellement tronquees pour", path); break; }
   }
   return all;
 }
@@ -532,17 +541,18 @@ async function loadAll(){
 
 async function upsert(id, patch){
   const c = sbData[id]||{};
-  // On renvoie TOUS les champs connus pour ne jamais ecraser le score/note/assign/statut
+  // IMPORTANT : on n'envoie QUE les champs realement modifies (+ PK + tracabilite).
+  // L'upsert merge-duplicates ne met a jour que les colonnes fournies -> on n'ecrase plus
+  // note/score/assign d'un autre utilisateur avec une valeur perimee de notre cache local.
   const payload = {
     prospect_id: id,
-    statut: c.s || "none",
     updated_by: userName || c.by || "",
     updated_at: new Date().toISOString(),
-    site_score: (c.score==null ? null : c.score),
-    note: c.note || null,
-    assigned_to: c.assigned || null,
     ...patch
   };
+  // Securite a la CREATION : si on cree la ligne via un champ autre que le statut,
+  // garantir un statut initial pour ne pas violer une contrainte NOT NULL.
+  if(!("statut" in patch) && c.s==null) payload.statut = "none";
   const r = await fetch(SB_URL+"/rest/v1/prospects_statuts",{method:"POST",headers:{...sbH(),Prefer:"resolution=merge-duplicates"},body:JSON.stringify(payload)});
   if(!r.ok) throw r.status;
   const upd={};
@@ -556,8 +566,9 @@ async function upsert(id, patch){
 }
 
 async function addHist(id, action){
-  await fetch(SB_URL+"/rest/v1/prospects_historique",{method:"POST",headers:{...sbH(),Prefer:"return=minimal"},
+  const r = await fetch(SB_URL+"/rest/v1/prospects_historique",{method:"POST",headers:{...sbH(),Prefer:"return=minimal"},
     body:JSON.stringify({prospect_id:id,action,by:userName})});
+  if(!r.ok) throw r.status; // remonte l'echec pour ne pas creer un trou d'historique silencieux
 }
 
 // Mise a jour EN PLACE d'une ligne (ne re-filtre pas -> la ligne ne disparait plus)
@@ -567,41 +578,61 @@ function updateRow(id){
   if(el) el.outerHTML = rowHTML(r);
 }
 
+// Restaure l'etat d'un prospect dans le cache (rollback optimiste)
+function restoreSb(id, prev){
+  if(prev===undefined) delete sbData[id]; else sbData[id]=prev;
+}
+
 async function changeStatut(id, st){
-  const old = (sbData[id]||{}).s||"none";
+  const prev = sbData[id];
+  const old = (prev||{}).s||"none";
   if(old===st) return;
   // Optimiste d'abord : l'UI repond tout de suite, la ligne reste en place
-  sbData[id] = {...(sbData[id]||{}), s:st, by:userName, at:new Date().toISOString()};
+  sbData[id] = {...(prev||{}), s:st, by:userName, at:new Date().toISOString()};
   updateRow(id); updateNavCnt();
   setDot("ld");
   try{
     await upsert(id, {statut:st, updated_by:userName, updated_at:new Date().toISOString()});
-    addHist(id, ST_LBL[old]+" → "+ST_LBL[st]);
     setDot("ok");
     if(document.getElementById("view-pipeline").classList.contains("active")) renderPipeline();
-  }catch(e){ setDot("err"); }
+  }catch(e){
+    // Echec : on annule la modif optimiste pour ne pas afficher un etat non sauvegarde
+    restoreSb(id, prev); updateRow(id); updateNavCnt();
+    if(document.getElementById("view-pipeline").classList.contains("active")) renderPipeline();
+    setDot("err"); console.error("changeStatut", id, e);
+    return;
+  }
+  // Historique best-effort : ne doit jamais annuler un statut deja persiste
+  addHist(id, ST_LBL[old]+" → "+ST_LBL[st]).catch(err=>console.warn("addHist", id, err));
 }
 
 async function changeAssign(id, val){
-  sbData[id] = {...(sbData[id]||{}), assigned:val};
+  const prev = sbData[id];
+  sbData[id] = {...(prev||{}), assigned:val};
   updateRow(id);
   setDot("ld");
   try{
     await upsert(id, {assigned_to:val, updated_by:userName});
-    addHist(id, "Assigne a "+val);
     setDot("ok");
-  }catch(e){setDot("err");}
+  }catch(e){ restoreSb(id, prev); updateRow(id); setDot("err"); console.error("changeAssign", id, e); return; }
+  addHist(id, "Assigne a "+val).catch(err=>console.warn("addHist", id, err));
 }
 
 async function saveNote(id, note){
+  const prev = sbData[id];
+  // Optimiste : on reflete la note tout de suite, on annule si l'ecriture echoue
+  sbData[id] = {...(prev||{}), note};
   try{
     await upsert(id, {note, updated_by:userName});
-    sbData[id] = {...(sbData[id]||{}), note};
     setDot("ok");
-    document.getElementById("pop-save-info").textContent = "Sauvegarde ✓";
+    const info=document.getElementById("pop-save-info"); if(info) info.textContent = "Sauvegarde ✓";
     setTimeout(()=>{ const el=document.getElementById("pop-save-info"); if(el) el.textContent="Sauvegarde auto"; },2000);
     render();
-  }catch(e){setDot("err");}
+  }catch(e){
+    restoreSb(id, prev); render();
+    const info=document.getElementById("pop-save-info"); if(info) info.textContent="Echec sauvegarde";
+    setDot("err"); console.error("saveNote", id, e);
+  }
 }
 
 async function loadHist(){
@@ -771,22 +802,22 @@ function renderCallCard(){
     return;
   }
   const r=callQueue[callIdx], en=enrichData[r.id]||{}, d=sbData[r.id]||{};
-  const siteV = r.has ? "<a href='"+(r.site.startsWith('http')?r.site:'https://'+r.site)+"' target='_blank'>"+r.site.replace(/^https?:\/\//,'').slice(0,30)+"</a> "+scoreBadge(d.score) : "<span style='color:var(--rd);font-weight:600'>Aucun site</span>";
-  const msg = "Bonjour, je parle bien au responsable de "+(r.nom||"l'établissement")+" ? Je suis "+userName+" de Veridian, je crée des sites internet pour les commerces comme le vôtre. J'ai remarqué que vous n'aviez pas (ou plus) de site à jour...";
+  const siteV = r.has ? "<a href='"+escUrl(r.site.startsWith('http')?r.site:'https://'+r.site)+"' target='_blank' rel='noopener'>"+esc(r.site.replace(/^https?:\/\//,'').slice(0,30))+"</a> "+scoreBadge(d.score) : "<span style='color:var(--rd);font-weight:600'>Aucun site</span>";
+  const msg = "Bonjour, je parle bien au responsable de "+esc(r.nom||"l'établissement")+" ? Je suis "+esc(userName)+" de Veridian, je crée des sites internet pour les commerces comme le vôtre. J'ai remarqué que vous n'aviez pas (ou plus) de site à jour...";
   body.innerHTML =
     "<div class='call-card'>"+
-      "<span class='call-sec'>"+r.sec+heatBadge(r)+"</span>"+
-      "<div class='call-nom'>"+(r.nom||"(sans nom)")+"</div>"+
-      "<div class='call-meta'>"+(r.adr?r.adr+", ":"")+(r.ville||"")+" ("+r.dep+")</div>"+
-      "<div class='call-tel'><a href='tel:"+r.tel+"'>"+fmtTel(r.tel)+"</a>"+
-        "<a class='call-cta' href='tel:"+r.tel+"'>Appeler</a></div>"+
+      "<span class='call-sec'>"+esc(r.sec)+heatBadge(r)+"</span>"+
+      "<div class='call-nom'>"+esc(r.nom||"(sans nom)")+"</div>"+
+      "<div class='call-meta'>"+(r.adr?esc(r.adr)+", ":"")+esc(r.ville||"")+" ("+esc(r.dep)+")</div>"+
+      "<div class='call-tel'><a href='tel:"+esc(r.tel)+"'>"+fmtTel(r.tel)+"</a>"+
+        "<a class='call-cta' href='tel:"+esc(r.tel)+"'>Appeler</a></div>"+
       "<div class='call-info'>"+
         "<div class='call-info-item'><div class='k'>Site web</div><div class='v'>"+siteV+"</div></div>"+
-        "<div class='call-info-item'><div class='k'>Chiffre d'affaires</div><div class='v'>"+caFmt(en.ca)+"</div></div>"+
-        "<div class='call-info-item'><div class='k'>Dirigeant</div><div class='v'>"+(en.dirigeant||"N/D")+"</div></div>"+
-        "<div class='call-info-item'><div class='k'>Effectif / Forme</div><div class='v'>"+(en.tranche_effectif||"N/D")+(en.forme_juridique?" · "+en.forme_juridique:"")+"</div></div>"+
+        "<div class='call-info-item'><div class='k'>Chiffre d'affaires</div><div class='v'>"+esc(caFmt(en.ca))+"</div></div>"+
+        "<div class='call-info-item'><div class='k'>Dirigeant</div><div class='v'>"+esc(en.dirigeant||"N/D")+"</div></div>"+
+        "<div class='call-info-item'><div class='k'>Effectif / Forme</div><div class='v'>"+esc(en.tranche_effectif||"N/D")+(en.forme_juridique?" · "+esc(en.forme_juridique):"")+"</div></div>"+
       "</div>"+
-      "<div class='call-script'><div class='lbl'>Accroche</div>"+msg+
+      "<div class='call-script'><div class='lbl'>Accroche</div>"+esc(msg)+
         "<button class='copy-msg' id='call-copy' style='margin-top:10px' onclick='callCopy()'>Copier l'accroche</button></div>"+
       "<details class='call-obj'><summary>Réponses aux objections ▾</summary>"+
         "<div class='obj'><b>« On n'a pas besoin de site »</b><p>Le site n'est pas pour vous, il est pour les clients qui vous cherchent déjà sur Google et tombent sur rien (ou sur un concurrent). 7 personnes sur 10 vérifient en ligne avant de se déplacer. Et vous n'avez rien à gérer, je m'occupe de tout.</p></div>"+
@@ -855,7 +886,7 @@ function renderStats(){
   const fbar=(label,color,n)=>`<div class='funnel-row'><span class='funnel-lbl'>${label}</span><div class='funnel-bar' style='width:${Math.max(Math.round(n/fmax*100),6)}%;background:${color}'>${n}</div></div>`;
   let usersHtml="";
   Object.entries(perUser).sort((a,b)=>b[1].signe-a[1].signe).forEach(([u,s])=>{
-    usersHtml+=`<tr><td><b>${u}</b></td><td>${s.traite}</td><td>${s.interesse}</td><td>${s.devis}</td><td style='color:var(--gr)'>${s.signe}</td></tr>`;
+    usersHtml+=`<tr><td><b>${esc(u)}</b></td><td>${s.traite}</td><td>${s.interesse}</td><td>${s.devis}</td><td style='color:var(--gr)'>${s.signe}</td></tr>`;
   });
   document.getElementById("kpi-wrap").innerHTML=`
     <div class='kpi-grid'>
@@ -956,24 +987,24 @@ function rowHTML(r){
   const d=sbData[r.id]||{};
   const st=d.s||"none", by=d.by||"", note=d.note||"", score=d.score, assigned=d.assigned||"";
   const siteHtml = r.has
-    ? "<a class='site-a' href='"+(r.site.startsWith("http")?r.site:"https://"+r.site)+"' target='_blank' rel='noopener' onclick='event.stopPropagation()'>"+r.site.replace(/^https?:\/\//,"").slice(0,24)+"</a>"+scoreBadge(score)
+    ? "<a class='site-a' href='"+escUrl(r.site.startsWith("http")?r.site:"https://"+r.site)+"' target='_blank' rel='noopener' onclick='event.stopPropagation()'>"+esc(r.site.replace(/^https?:\/\//,"").slice(0,24))+"</a>"+scoreBadge(score)
     : "<span class='no-site'>Aucun</span>";
   const emailHtml=r.email
-    ? "<a class='em-a' href='mailto:"+r.email+"' title='"+r.email+"' onclick='event.stopPropagation()'>"+r.email.slice(0,20)+(r.email.length>20?"…":"")+"</a>"
+    ? "<a class='em-a' href='mailto:"+esc(r.email)+"' title='"+esc(r.email)+"' onclick='event.stopPropagation()'>"+esc(r.email.slice(0,20))+(r.email.length>20?"…":"")+"</a>"
     : "<span style='color:var(--bor)'>—</span>";
   const isMine=assigned===userName?"mine":"";
-  const assignOpts=[""].concat(TEAM).map(t=>"<option value='"+t+"'"+(assigned===t?" selected":"")+">"+( t||"—")+"</option>").join("");
+  const assignOpts=[""].concat(TEAM).map(t=>"<option value='"+esc(t)+"'"+(assigned===t?" selected":"")+">"+(esc(t)||"—")+"</option>").join("");
   return "<tr class='prospect-row "+isMine+"' data-id='"+r.id+"' onclick='openDrawer("+r.id+")'>\
-<td><div class='nom'>"+(r.nom||"(sans nom)")+heatBadge(r)+((enrichData[r.id]||{}).etat==="Fermee"?" <span class='closed-tag'>Fermé</span>":"")+"</div>"+(r.type?"<span class='tag'>"+r.type+"</span>":"")+(caFmt((enrichData[r.id]||{}).ca)!=="N/D"?"<span class='ca-chip'>"+caFmt((enrichData[r.id]||{}).ca)+"</span>":"")+"</td>\
-<td class='tel'><a class='tel-a' href='tel:"+r.tel+"' onclick='event.stopPropagation()'>"+fmtTel(r.tel)+"</a></td>\
+<td><div class='nom'>"+esc(r.nom||"(sans nom)")+heatBadge(r)+((enrichData[r.id]||{}).etat==="Fermee"?" <span class='closed-tag'>Fermé</span>":"")+"</div>"+(r.type?"<span class='tag'>"+esc(r.type)+"</span>":"")+(caFmt((enrichData[r.id]||{}).ca)!=="N/D"?"<span class='ca-chip'>"+esc(caFmt((enrichData[r.id]||{}).ca))+"</span>":"")+"</td>\
+<td class='tel'><a class='tel-a' href='tel:"+esc(r.tel)+"' onclick='event.stopPropagation()'>"+fmtTel(r.tel)+"</a></td>\
 <td>"+emailHtml+"</td>\
 <td>"+siteHtml+"</td>\
-<td><div>"+(r.ville||"—")+"</div><div class='dep-b'>"+r.dep+"</div></td>\
+<td><div>"+esc(r.ville||"—")+"</div><div class='dep-b'>"+esc(r.dep)+"</div></td>\
 <td onmouseenter='showTip(event,"+r.id+")' onmouseleave='hideTip()'>\
   <button class='st "+ST_CLS[st]+"' onclick='event.stopPropagation();changeStatut("+r.id+",\""+NEXT_ST[st]+"\")'>"+ST_LBL[st]+"</button>\
-  "+(by&&st!=="none"?"<span class='by-txt'>par "+by+"</span>":"")+"</td>\
+  "+(by&&st!=="none"?"<span class='by-txt'>par "+esc(by)+"</span>":"")+"</td>\
 <td onclick='event.stopPropagation()'><select class='assign' onchange='changeAssign("+r.id+",this.value)'>"+assignOpts+"</select></td>\
-<td onclick='event.stopPropagation()'><button class='note-btn"+(note?" has-note":"")+"' onclick='openNotePop(event,"+r.id+")' title='"+(note?note.slice(0,40):"Ajouter une note")+"'>✏</button></td>\
+<td onclick='event.stopPropagation()'><button class='note-btn"+(note?" has-note":"")+"' onclick='openNotePop(event,"+r.id+")' title='"+esc(note?note.slice(0,40):"Ajouter une note")+"'>✏</button></td>\
 </tr>";
 }
 
@@ -1036,9 +1067,9 @@ function renderPipeline(){
       const d=sbData[r.id]||{};
       const card=document.createElement("div");
       card.className="k-card"; card.draggable=true; card.dataset.id=r.id;
-      card.innerHTML="<div class='k-nom'>"+( r.nom||"(sans nom)")+"</div>\
-<div class='k-tel'><a href='tel:"+r.tel+"'>"+r.tel+"</a></div>\
-<div class='k-meta'><span class='k-dep'>"+r.dep+"</span>"+(d.by&&col.id!=="none"?"<span class='k-by'>"+d.by+"</span>":"")+"</div>";
+      card.innerHTML="<div class='k-nom'>"+esc(r.nom||"(sans nom)")+"</div>\
+<div class='k-tel'><a href='tel:"+esc(r.tel)+"'>"+esc(r.tel)+"</a></div>\
+<div class='k-meta'><span class='k-dep'>"+esc(r.dep)+"</span>"+(d.by&&col.id!=="none"?"<span class='k-by'>"+esc(d.by)+"</span>":"")+"</div>";
       card.addEventListener("dragstart",e=>{ e.dataTransfer.setData("pid",r.id); card.classList.add("dragging"); });
       card.addEventListener("dragend",()=>card.classList.remove("dragging"));
       card.addEventListener("click",()=>openDrawer(r.id));
@@ -1058,10 +1089,10 @@ function renderHist(){
     const r=ALL.find(p=>p.id===h.prospect_id)||{};
     const d=new Date(h.at);
     const dt=d.toLocaleDateString("fr-FR",{day:"2-digit",month:"2-digit"})+" "+d.toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"});
-    return "<tr><td style='color:var(--mu);font-size:11.5px'>"+dt+"</td>\
-<td><b>"+( r.nom||"Prospect #"+h.prospect_id)+"</b></td>\
-<td>"+h.action+"</td>\
-<td><span class='dep-b'>"+( h.by||"—")+"</span></td></tr>";
+    return "<tr><td style='color:var(--mu);font-size:11.5px'>"+esc(dt)+"</td>\
+<td><b>"+esc(r.nom||"Prospect #"+h.prospect_id)+"</b></td>\
+<td>"+esc(h.action)+"</td>\
+<td><span class='dep-b'>"+esc(h.by||"—")+"</span></td></tr>";
   }).join("");
   tbody.innerHTML=byName;
 }
@@ -1073,12 +1104,12 @@ function openDrawer(id){
   document.getElementById("dr-nom").textContent=r.nom||"(sans nom)";
   const en = enrichData[id]||null;
   const caStr    = caFmt(en&&en.ca);
-  const effStr   = en&&en.tranche_effectif ? en.tranche_effectif+" sal." : "N/D";
-  const formStr  = en&&en.forme_juridique  ? en.forme_juridique           : "N/D";
-  const dateCr   = en&&en.date_creation    ? en.date_creation.slice(0,4)  : "N/D";
-  const sirenStr = en&&en.siren            ? en.siren                     : "N/D";
-  const dirStr   = en&&en.dirigeant        ? en.dirigeant                 : "N/D";
-  const nafStr   = en&&en.naf_libelle      ? en.naf_libelle+" ("+en.naf_code+")" : (en&&en.naf_code||"N/D");
+  const effStr   = en&&en.tranche_effectif ? esc(en.tranche_effectif)+" sal." : "N/D";
+  const formStr  = en&&en.forme_juridique  ? esc(en.forme_juridique)      : "N/D";
+  const dateCr   = en&&en.date_creation    ? esc(en.date_creation.slice(0,4)) : "N/D";
+  const sirenStr = en&&en.siren            ? esc(en.siren)                : "N/D";
+  const dirStr   = en&&en.dirigeant        ? esc(en.dirigeant)            : "N/D";
+  const nafStr   = en&&en.naf_libelle      ? esc(en.naf_libelle+" ("+en.naf_code+")") : (esc(en&&en.naf_code)||"N/D");
   const etatStr  = en&&en.etat ? (en.etat==="Fermee"?"<span style='color:var(--rd);font-weight:600'>Fermée (cessée)</span>":"<span style='color:var(--gr);font-weight:600'>Active</span>") : "N/D";
   const enrichBlock = en
     ? "<div class='d-sect' style='background:rgba(108,125,255,.06);border:1px solid rgba(108,125,255,.2);border-radius:8px;padding:14px;margin-bottom:18px'>\
@@ -1094,12 +1125,12 @@ function openDrawer(id){
     : "<div class='d-sect' style='color:var(--mu);font-size:12px;padding:10px;border:1px dashed var(--bor);border-radius:8px;margin-bottom:18px;text-align:center'>Donnees entreprise non disponibles<br><small>Lancez enrich_companies.py</small></div>";
   document.getElementById("dr-body").innerHTML=
     enrichBlock+
-    "<div class='d-row'><div class='d-field'><div class='d-label'>Telephone</div><div class='d-val'><a href='tel:"+r.tel+"'>"+fmtTel(r.tel)+"</a></div></div>\
-<div class='d-field'><div class='d-label'>Email</div><div class='d-val'>"+(r.email?"<a href='mailto:"+r.email+"'>"+r.email+"</a>":"—")+"</div></div></div>\
-<div class='d-row'><div class='d-field'><div class='d-label'>Site web</div><div class='d-val'>"+(r.has?"<a href='"+(r.site.startsWith("http")?r.site:"https://"+r.site)+"' target='_blank'>"+r.site+"</a>":"—")+"</div></div>\
+    "<div class='d-row'><div class='d-field'><div class='d-label'>Telephone</div><div class='d-val'><a href='tel:"+esc(r.tel)+"'>"+fmtTel(r.tel)+"</a></div></div>\
+<div class='d-field'><div class='d-label'>Email</div><div class='d-val'>"+(r.email?"<a href='mailto:"+esc(r.email)+"'>"+esc(r.email)+"</a>":"—")+"</div></div></div>\
+<div class='d-row'><div class='d-field'><div class='d-label'>Site web</div><div class='d-val'>"+(r.has?"<a href='"+escUrl(r.site.startsWith("http")?r.site:"https://"+r.site)+"' target='_blank' rel='noopener'>"+esc(r.site)+"</a>":"—")+"</div></div>\
 <div class='d-field'><div class='d-label'>Score site</div><div class='d-val'>"+scoreBadge(d.score)+"</div></div></div>\
-<div class='d-row'><div class='d-field'><div class='d-label'>Adresse</div><div class='d-val'>"+(r.adr||"—")+"<br>"+r.cp+" "+r.ville+"<br>"+r.dep+"</div></div>\
-<div class='d-field'><div class='d-label'>Secteur / Type</div><div class='d-val'>"+r.sec+"<br><span class='dep-b'>"+r.type+"</span></div></div></div>\
+<div class='d-row'><div class='d-field'><div class='d-label'>Adresse</div><div class='d-val'>"+esc(r.adr||"—")+"<br>"+esc(r.cp)+" "+esc(r.ville)+"<br>"+esc(r.dep)+"</div></div>\
+<div class='d-field'><div class='d-label'>Secteur / Type</div><div class='d-val'>"+esc(r.sec)+"<br><span class='dep-b'>"+esc(r.type)+"</span></div></div></div>\
 <div class='d-sect'><div class='d-label'>Issue de l'appel</div>\
 <div class='outcomes'>\
 <button class='oc rep' onclick='changeStatut("+id+",\"none\");addHist("+id+",\"Répondeur / pas de réponse\")'>Répondeur</button>\
@@ -1116,7 +1147,7 @@ function openDrawer(id){
 "+(d.rappel?"<span style='font-size:11px;color:var(--yw);align-self:center;margin-left:6px'>📅 "+new Date(d.rappel).toLocaleDateString('fr-FR')+"</span>":"")+"</div>\
 <button class='copy-msg' id='copy-msg-btn' onclick='copyMsg("+id+")'>Copier un message d'accroche</button>\
 </div>\
-<div class='d-sect'><div class='d-label'>Note</div><textarea style='width:100%;background:var(--bg);border:1px solid var(--bor);border-radius:7px;padding:9px;color:var(--tx);font-size:13px;resize:vertical;min-height:70px;outline:none;font-family:inherit' onchange='saveNote("+id+",this.value)' placeholder='Note...'>"+(d.note||"")+"</textarea></div>\
+<div class='d-sect'><div class='d-label'>Note</div><textarea style='width:100%;background:var(--bg);border:1px solid var(--bor);border-radius:7px;padding:9px;color:var(--tx);font-size:13px;resize:vertical;min-height:70px;outline:none;font-family:inherit' onchange='saveNote("+id+",this.value)' placeholder='Note...'>"+esc(d.note||"")+"</textarea></div>\
 <div class='d-sect'><div class='d-label'>Historique</div><div id='dr-hist'><div style='color:var(--mu);font-size:12px'>Chargement...</div></div></div>";
   // Charger historique du prospect
   fetch(SB_URL+"/rest/v1/prospects_historique?prospect_id=eq."+id+"&order=at.desc&limit=10",{headers:sbH()})
@@ -1125,7 +1156,7 @@ function openDrawer(id){
       if(!rows.length){ el.innerHTML="<div style='color:var(--mu);font-size:12px'>Aucune action.</div>"; return; }
       el.innerHTML=rows.map(h=>{
         const dt=new Date(h.at).toLocaleString("fr-FR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});
-        return "<div class='hist-item'><div class='hist-dot'></div><div class='hist-text'><b>"+h.by+"</b> — "+h.action+"</div><div class='hist-time'>"+dt+"</div></div>";
+        return "<div class='hist-item'><div class='hist-dot'></div><div class='hist-text'><b>"+esc(h.by)+"</b> · "+esc(h.action)+"</div><div class='hist-time'>"+esc(dt)+"</div></div>";
       }).join("");
     });
   document.getElementById("drawer").classList.add("open");
@@ -1158,7 +1189,7 @@ function showTip(e,id){
   const d=sbData[id]||{};
   if(!d.by||!d.at) return;
   const dt=new Date(d.at).toLocaleString("fr-FR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});
-  document.getElementById("tooltip").innerHTML="<div class='tooltip-row'><b>"+d.by+"</b></div><div class='tooltip-row'>"+dt+"</div>";
+  document.getElementById("tooltip").innerHTML="<div class='tooltip-row'><b>"+esc(d.by)+"</b></div><div class='tooltip-row'>"+esc(dt)+"</div>";
   document.getElementById("tooltip").style.display="block";
   document.getElementById("tooltip").style.left=e.pageX+"px";
   document.getElementById("tooltip").style.top=(e.pageY-60)+"px";
